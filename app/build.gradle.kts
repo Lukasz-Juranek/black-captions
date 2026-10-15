@@ -74,6 +74,10 @@ android {
     lint {
         checkReleaseBuilds = false
     }
+    // Compress the ~70 MB of native code in the APK (it's unpacked on install), roughly halving the download.
+    packaging {
+        jniLibs { useLegacyPackaging = true }
+    }
 }
 
 dependencies {
