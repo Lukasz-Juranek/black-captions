@@ -1,3 +1,5 @@
+import java.security.MessageDigest
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -12,7 +14,7 @@ if (!sherpaAar.exists()) {
     uri("https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-1.13.8.aar").toURL()
         .openStream().use { input -> sherpaAar.outputStream().use { input.copyTo(it) } }
 }
-val sherpaHash = java.security.MessageDigest.getInstance("SHA-256").digest(sherpaAar.readBytes())
+val sherpaHash = MessageDigest.getInstance("SHA-256").digest(sherpaAar.readBytes())
     .joinToString("") { "%02x".format(it) }
 check(sherpaHash == "633c24321e06b1fe79feafa03ea16cbc0f8a286641e2da3559bac91bdb13bd96") {
     sherpaAar.delete()
