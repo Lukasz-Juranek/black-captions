@@ -19,14 +19,38 @@ import java.util.zip.ZipInputStream
 data class VoskModel(val name: String, val lang: String, val language: String, val size: String, val url: String)
 
 /**
+ * A bigger, slower model that re-reads each finished phrase for the [lang] Vosk language.
+ * It runs through sherpa-onnx as a NeMo CTC model made of [model] and [tokens] in its folder.
+ */
+data class AccurateModel(
+    val id: String, val lang: String, val label: String, val size: String, val files: Map<String, String>,
+    val model: String = "model.int8.onnx", val tokens: String = "tokens.txt",
+)
+
+/**
  * The small Vosk models, listed from alphacephei.com, downloaded and unpacked into app storage.
  * The list is cached, so the app still knows the models after going offline.
  */
 object Models {
     private const val LIST_URL = "https://alphacephei.com/vosk/models/model-list.json"
+    private const val HF = "https://huggingface.co/csukuangfj"
+
+    /** Sber's GigaAM v3: much more accurate Russian, with punctuation and capitals. MIT licensed. */
+    val accurate = listOf(
+        "sherpa-onnx-nemo-ctc-punct-giga-am-v3-russian-2025-12-16".let { id ->
+            AccurateModel(
+                id, "ru", "GigaAM v3", "225 MB",
+                listOf("model.int8.onnx", "tokens.txt").associateWith { "$HF/$id/resolve/main/$it" }
+            )
+        }
+    )
+
+    fun accurateFor(lang: String?) = accurate.firstOrNull { it.lang == lang }
 
     val list = MutableStateFlow<List<VoskModel>>(emptyList())
     val listFailed = MutableStateFlow(false)
+
+    /** Folder names of downloaded Vosk and accurate models. */
     val installed = MutableStateFlow<Set<String>>(emptySet())
 
     /** Model name → download percent, or -1 while unpacking. */
@@ -95,6 +119,33 @@ object Models {
                 zip.delete()
                 tmp.deleteRecursively()
                 progress.update { it - m.name }
+            }
+        }
+    }
+
+    /** Downloads an accurate model's files one by one; progress covers them all by size. */
+    fun download(c: Context, m: AccurateModel) {
+        val app = c.applicationContext
+        if (m.id in progress.value) return
+        progress.update { it + (m.id to 0) }
+        scope.launch {
+            val tmp = File(dir(app), "${m.id}.part")
+            try {
+                tmp.deleteRecursively()
+                tmp.mkdirs()
+                // The model file is nearly all of the size, so it drives the percentage.
+                m.files.forEach { (name, url) ->
+                    fetch(url, File(tmp, name)) { pct -> if (name == m.model) progress.update { it + (m.id to pct) } }
+                }
+                val target = path(app, m.id)
+                target.deleteRecursively()
+                if (!tmp.renameTo(target)) throw IOException("couldn't move the model into place")
+                installed.value = installedNames(app)
+            } catch (e: Exception) {
+                Captions.error.value = "Download of ${m.label} failed: ${e.message}"
+            } finally {
+                tmp.deleteRecursively()
+                progress.update { it - m.id }
             }
         }
     }

@@ -34,6 +34,7 @@ import kotlin.math.max
 private const val WHITE = Color.WHITE
 private const val DIM = 0xFF7A7A7A.toInt()
 private const val FAINT = 0xFF2A2A2A.toInt()
+private const val PENDING = 0xFFB0B0B0.toInt()
 
 /**
  * The floating caption window: a draggable, resizable black panel on top of every app.
@@ -154,7 +155,10 @@ class Overlay(private val ctx: Context, private val onPause: () -> Unit, private
         val sb = SpannableStringBuilder()
         for (line in lines.takeLast(40)) {
             if (sb.isNotEmpty()) sb.append('\n')
-            if (line.translation != null) {
+            if (line.pending) {
+                // Quick text, about to be replaced by the accurate one.
+                styled(sb, line.text, PENDING, 1f)
+            } else if (line.translation != null) {
                 sb.append(line.translation)
                 sb.append('\n')
                 styled(sb, line.text, DIM, 0.75f)

@@ -24,6 +24,10 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import com.google.mlkit.nl.translate.Translator
+import com.k2fsa.sherpa.onnx.OfflineModelConfig
+import com.k2fsa.sherpa.onnx.OfflineNemoEncDecCtcModelConfig
+import com.k2fsa.sherpa.onnx.OfflineRecognizer
+import com.k2fsa.sherpa.onnx.OfflineRecognizerConfig
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
@@ -38,6 +42,7 @@ import org.vosk.LibVosk
 import org.vosk.LogLevel
 import org.vosk.Model
 import org.vosk.Recognizer
+import java.io.File
 import kotlin.math.max
 
 /**
@@ -53,8 +58,14 @@ class CaptionService : Service() {
     private var worker: Thread? = null
     @Volatile private var active = false
 
-    /** Finished lines waiting for translation and the history file, in order. */
-    private val finished = Channel<Line>(Channel.UNLIMITED)
+    /** Finished phrases waiting for the accurate pass, translation and the history file, in order. */
+    private val finished = Channel<Phrase>(Channel.UNLIMITED)
+
+    /** A finished line, plus its audio when the accurate model will re-read it. */
+    private class Phrase(val line: Line, val audio: ShortArray?, val rate: Int)
+
+    /** The accurate model for this session, or null when Vosk's text is final. */
+    private var accurateModel: AccurateModel? = null
     private var translator: Translator? = null
     private var translatorReady: Deferred<Unit>? = null
 
@@ -114,6 +125,8 @@ class CaptionService : Service() {
         }, main)
 
         active = true
+        accurateModel = Models.accurateFor(Prefs.lang(this))
+            ?.takeIf { Prefs.accurate(this) && Models.path(this, it.id).isDirectory }
         Captions.clear()
         Captions.error.value = null
         Captions.running.value = true
@@ -128,7 +141,14 @@ class CaptionService : Service() {
         }
 
         setUpTranslator()
-        scope.launch { for (line in finished) finish(line) }
+        scope.launch {
+            val accurate = accurateModel?.let(::loadAccurate)
+            try {
+                for (phrase in finished) finish(phrase, accurate)
+            } finally {
+                accurate?.release()
+            }
+        }
         worker = Thread({ listen(projection, modelName) }, "captions").also { it.start() }
         return START_NOT_STICKY
     }
@@ -147,7 +167,17 @@ class CaptionService : Service() {
             recognizer = Recognizer(model, record.sampleRate.toFloat())
             Captions.status.value = null
 
-            val buffer = ShortArray(record.sampleRate / 10) // 100 ms chunks, so words show up as they're said
+            val rate = record.sampleRate
+            val buffer = ShortArray(rate / 10) // 100 ms chunks, so words show up as they're said
+            // The current phrase's audio, kept for the accurate model. Long phrases are cut so it
+            // stays quick and within what the model was trained on.
+            val phrase = if (accurateModel != null) ShortArray(rate * MAX_PHRASE_SECONDS) else null
+            var phraseLen = 0
+            fun commitWith(json: String) {
+                commit(JSONObject(json).optString("text"), phrase?.copyOf(phraseLen), rate)
+                phraseLen = 0
+            }
+
             record.startRecording()
             var wasPaused = false
             while (active) {
@@ -155,19 +185,30 @@ class CaptionService : Service() {
                 if (n < 0) throw IllegalStateException("audio capture stopped ($n)")
                 if (Captions.paused.value) {
                     // Close off whatever was being said so it isn't glued to what comes after the pause.
-                    if (!wasPaused) commit(JSONObject(recognizer.finalResult).optString("text"))
+                    if (!wasPaused) commitWith(recognizer.finalResult)
                     wasPaused = true
                     continue
                 }
                 wasPaused = false
                 if (n == 0) continue
+                if (phrase != null) {
+                    if (phraseLen + n > phrase.size) commitWith(recognizer.finalResult)
+                    buffer.copyInto(phrase, phraseLen, 0, n)
+                    phraseLen += n
+                }
                 if (recognizer.acceptWaveForm(buffer, n)) {
-                    commit(JSONObject(recognizer.result).optString("text"))
+                    commitWith(recognizer.result)
                 } else {
-                    Captions.partial.value = JSONObject(recognizer.partialResult).optString("partial")
+                    val partial = JSONObject(recognizer.partialResult).optString("partial")
+                    Captions.partial.value = partial
+                    // Nothing heard yet: keep only a short lead-in instead of piling up silence or music.
+                    if (phrase != null && partial.isEmpty() && phraseLen > rate) {
+                        phrase.copyInto(phrase, 0, phraseLen - rate / 2, phraseLen)
+                        phraseLen = rate / 2
+                    }
                 }
             }
-            commit(JSONObject(recognizer.finalResult).optString("text"))
+            commitWith(recognizer.finalResult)
         } catch (e: Exception) {
             if (active) {
                 Captions.error.value = "Captions stopped: ${e.message}"
@@ -180,16 +221,66 @@ class CaptionService : Service() {
         }
     }
 
-    private fun commit(text: String) {
+    private fun commit(text: String, audio: ShortArray?, rate: Int) {
         Captions.partial.value = ""
         if (text.isBlank()) return
-        val line = Line(System.currentTimeMillis(), text.trim().replaceFirstChar { it.uppercase() })
+        val line = Line(System.currentTimeMillis(), text.trim().replaceFirstChar { it.uppercase() }, pending = audio != null)
         Captions.add(line)
-        finished.trySend(line)
+        finished.trySend(Phrase(line, audio, rate))
     }
 
-    /** Translates a finished line (when translation is on) and saves it to the history. */
-    private suspend fun finish(line: Line) {
+    private fun loadAccurate(m: AccurateModel): OfflineRecognizer? {
+        val dir = Models.path(this, m.id)
+        val status = "Loading ${m.label}…"
+        Captions.status.compareAndSet(null, status)
+        return try {
+            OfflineRecognizer(
+                config = OfflineRecognizerConfig(
+                    modelConfig = OfflineModelConfig(
+                        nemo = OfflineNemoEncDecCtcModelConfig(model = File(dir, m.model).absolutePath),
+                        tokens = File(dir, m.tokens).absolutePath,
+                        numThreads = (Runtime.getRuntime().availableProcessors() / 2).coerceIn(1, 4),
+                    )
+                )
+            )
+        } catch (e: Throwable) {
+            Captions.error.value = "Couldn't load ${m.label}; showing quick captions instead"
+            null
+        } finally {
+            Captions.status.compareAndSet(status, null)
+        }
+    }
+
+    /** Re-reads the phrase with the accurate model when there is one. */
+    private fun reread(recognizer: OfflineRecognizer, audio: ShortArray, rate: Int): String {
+        if (audio.size < rate / 2) return "" // too short to be worth it
+        val stream = recognizer.createStream()
+        return try {
+            stream.acceptWaveform(FloatArray(audio.size) { audio[it] / 32768f }, rate)
+            recognizer.decode(stream)
+            recognizer.getResult(stream).text.trim()
+        } finally {
+            stream.release()
+        }
+    }
+
+    /**
+     * Swaps in the accurate text, translates the line (when translation is on) and saves it
+     * to the history.
+     */
+    private suspend fun finish(phrase: Phrase, accurate: OfflineRecognizer?) {
+        var line = phrase.line
+        if (line.pending) {
+            val better = if (accurate != null && phrase.audio != null) {
+                try {
+                    reread(accurate, phrase.audio, phrase.rate)
+                } catch (e: Exception) {
+                    ""
+                }
+            } else ""
+            line = line.copy(text = better.ifBlank { line.text }, pending = false)
+            Captions.replace(line)
+        }
         val t = translator
         val done = if (t == null) line else try {
             translatorReady?.await()
@@ -224,7 +315,7 @@ class CaptionService : Service() {
     }
 
     private fun updateTitle() {
-        val language = Prefs.language(this) ?: ""
+        val language = (Prefs.language(this) ?: "") + (accurateModel?.let { " · ${it.label}" } ?: "")
         val source = Prefs.lang(this)?.let(Translation::fromVosk)
         val target = Prefs.target(this)
         Captions.title.value =
@@ -317,6 +408,7 @@ class CaptionService : Service() {
         private const val ACTION_TRANSLATE = "translate"
         private const val EXTRA_CODE = "code"
         private const val EXTRA_DATA = "data"
+        private const val MAX_PHRASE_SECONDS = 15
 
         /** Starts captioning with the screen-capture consent the user just gave. */
         fun start(c: Context, resultCode: Int, data: Intent) = ContextCompat.startForegroundService(

@@ -10,6 +10,10 @@ It's a no-ads clone of LiveCaptionN. Recognition and translation both run on the
 - **Speech language:** pick one from the list. Its model downloads once, usually about 40–50 MB, from
   [Vosk](https://alphacephei.com/vosk/models). About 30 languages are available, including Polish, English, German,
   Spanish, French, Russian, Ukrainian and Chinese. After that it works offline
+- **Accurate mode** (Russian for now): download Sber's [GigaAM v3](https://github.com/salute-developers/GigaAM)
+  (225 MB, MIT). Live text still appears word by word. When a phrase ends, GigaAM re-reads its audio and replaces the line
+  with a much more accurate version that has punctuation and capitals, usually within a second or two. The line is light grey
+  until then. Translation runs on the improved text. Runs on the phone through [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)
 - **Translate to:** optional. Uses Google ML Kit on the phone, with about 30 MB per language downloaded on first use. The translation
   shows in white and the original in grey under it
 - Text size (S/M/L/XL) and background darkness (40–100%)
@@ -17,7 +21,7 @@ It's a no-ads clone of LiveCaptionN. Recognition and translation both run on the
 - Pause/Resume and Stop are also in the notification
 
 Some apps block audio capture, often streaming apps with DRM. Phone calls can't be captioned either.
-The small models write lowercase text without punctuation.
+The small Vosk models write lowercase text without punctuation. Accurate mode fixes that where it's available.
 
 It needs the audio recording permission (Android uses it for capturing playback), "Display over other apps", and
 screen-recording consent each time it starts. Built with Kotlin, Jetpack Compose, Vosk and ML Kit. It needs Android 10 or newer.

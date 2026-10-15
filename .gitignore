@@ -7,3 +7,4 @@ local.properties
 keystore/
 *.p12
 *.jks
+app/libs/

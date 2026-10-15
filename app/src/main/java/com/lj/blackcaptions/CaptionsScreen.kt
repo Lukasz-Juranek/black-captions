@@ -87,6 +87,7 @@ fun CaptionsScreen(onStart: () -> Unit) {
     var target by remember { mutableStateOf(Prefs.target(ctx)) }
     var size by remember { mutableStateOf(Prefs.textSize(ctx)) }
     var shade by remember { mutableStateOf(Prefs.shade(ctx)) }
+    var accurate by remember { mutableStateOf(Prefs.accurate(ctx)) }
     var pickModel by remember { mutableStateOf(false) }
     var pickTarget by remember { mutableStateOf(false) }
 
@@ -193,6 +194,32 @@ fun CaptionsScreen(onStart: () -> Unit) {
                 }
             }
             Spacer(Modifier.height(8.dp))
+        }
+
+        // Accurate mode, for languages that have a bigger model
+        Models.accurateFor(sourceLang)?.takeIf { ready }?.let { m ->
+            val have = m.id in installed
+            val pct = progress[m.id]
+            Setting("Accurate mode · ${m.label}") {
+                when {
+                    pct != null -> Text("Downloading… $pct%", color = Dim, modifier = Modifier.padding(12.dp))
+                    !have -> TextButton(onClick = { Models.download(ctx, m) }) { Text("Download ${m.size}") }
+                    else -> {
+                        Choice("On", accurate) { accurate = true; Prefs.setAccurate(ctx, true) }
+                        Choice("Off", !accurate) { accurate = false; Prefs.setAccurate(ctx, false) }
+                        if (!running) {
+                            TextButton(onClick = { Models.delete(ctx, m.id) }) { Text("Delete", color = Dim) }
+                        }
+                    }
+                }
+            }
+            Text(
+                "Live text stays as it is now; when a phrase ends, ${m.label} rewrites it with much better accuracy, " +
+                    "punctuation and capitals, usually within a second or two." +
+                    if (running && have) " Takes effect the next time you start." else "",
+                color = Dim, fontSize = 13.sp
+            )
+            Spacer(Modifier.height(12.dp))
         }
 
         // Translation

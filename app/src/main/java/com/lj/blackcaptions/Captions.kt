@@ -3,8 +3,11 @@ package com.lj.blackcaptions
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.update
 
-/** One finished caption. [time] doubles as its id. */
-data class Line(val time: Long, val text: String, val translation: String? = null)
+/**
+ * One finished caption. [time] doubles as its id. [pending] is the quick Vosk text while the
+ * accurate model is still re-reading the phrase.
+ */
+data class Line(val time: Long, val text: String, val translation: String? = null, val pending: Boolean = false)
 
 /** State shared between the service, the overlay and the screen. */
 object Captions {

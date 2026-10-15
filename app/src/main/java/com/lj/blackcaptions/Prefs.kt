@@ -24,6 +24,10 @@ object Prefs {
         putString("language", m.language)
     }
 
+    /** Re-read finished phrases with the accurate model, when one is downloaded for the language. */
+    fun accurate(c: Context) = sp(c).getBoolean("accurate", true)
+    fun setAccurate(c: Context, on: Boolean) = sp(c).edit { putBoolean("accurate", on) }
+
     /** ML Kit language code to translate into, or null for no translation. */
     fun target(c: Context) = sp(c).getString("target", null)
     fun setTarget(c: Context, code: String?) = sp(c).edit { putString("target", code) }
