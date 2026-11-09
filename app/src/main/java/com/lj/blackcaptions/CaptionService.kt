@@ -43,6 +43,7 @@ import org.vosk.LogLevel
 import org.vosk.Model
 import org.vosk.Recognizer
 import java.io.File
+import kotlin.math.abs
 import kotlin.math.max
 
 /**
@@ -165,6 +166,12 @@ class CaptionService : Service() {
             if (!active) return
             record = openRecord(projection) ?: throw IllegalStateException("couldn't capture audio")
             recognizer = Recognizer(model, record.sampleRate.toFloat())
+            if (accurateModel != null) {
+                // Vosk normally ends a phrase at any short breath. The accurate model reads each phrase on its
+                // own and punctuates it as a full sentence, so fragments come out as "Он сказал. Что завтра."
+                // Waiting for a real pause gives it whole sentences. Our own cut handles the length limit.
+                recognizer.setEndpointerDelays(5f, END_SILENCE_SECONDS, MAX_PHRASE_SECONDS + 10f)
+            }
             Captions.status.value = null
 
             val rate = record.sampleRate
@@ -173,9 +180,11 @@ class CaptionService : Service() {
             // stays quick and within what the model was trained on.
             val phrase = if (accurateModel != null) ShortArray(rate * MAX_PHRASE_SECONDS) else null
             var phraseLen = 0
-            fun commitWith(json: String) {
-                commit(JSONObject(json).optString("text"), phrase?.copyOf(phraseLen), rate)
-                phraseLen = 0
+            // Sends the first [keep] samples with the line; anything after them starts the next phrase.
+            fun commitWith(json: String, keep: Int = phraseLen) {
+                commit(JSONObject(json).optString("text"), phrase?.copyOf(keep), rate)
+                if (phrase != null && keep < phraseLen) phrase.copyInto(phrase, 0, keep, phraseLen)
+                phraseLen -= keep
             }
 
             record.startRecording()
@@ -192,7 +201,8 @@ class CaptionService : Service() {
                 wasPaused = false
                 if (n == 0) continue
                 if (phrase != null) {
-                    if (phraseLen + n > phrase.size) commitWith(recognizer.finalResult)
+                    // Too long: cut at the quietest moment of the last few seconds rather than mid-word.
+                    if (phraseLen + n > phrase.size) commitWith(recognizer.finalResult, quietestCut(phrase, phraseLen, rate))
                     buffer.copyInto(phrase, phraseLen, 0, n)
                     phraseLen += n
                 }
@@ -201,10 +211,11 @@ class CaptionService : Service() {
                 } else {
                     val partial = JSONObject(recognizer.partialResult).optString("partial")
                     Captions.partial.value = partial
-                    // Nothing heard yet: keep only a short lead-in instead of piling up silence or music.
-                    if (phrase != null && partial.isEmpty() && phraseLen > rate) {
-                        phrase.copyInto(phrase, 0, phraseLen - rate / 2, phraseLen)
-                        phraseLen = rate / 2
+                    // Nothing heard yet: keep only a lead-in instead of piling up silence or music. Vosk's
+                    // partial text lags the speech, so the lead-in has to be long enough to hold the first word.
+                    if (phrase != null && partial.isEmpty() && phraseLen > rate * 2) {
+                        phrase.copyInto(phrase, 0, phraseLen - rate, phraseLen)
+                        phraseLen = rate
                     }
                 }
             }
@@ -251,12 +262,39 @@ class CaptionService : Service() {
         }
     }
 
-    /** Re-reads the phrase with the accurate model when there is one. */
+    /** Where to split [len] samples of [audio]: the middle of its quietest 100 ms in the last 3 seconds. */
+    private fun quietestCut(audio: ShortArray, len: Int, rate: Int): Int {
+        val window = rate / 10
+        var best = len
+        var bestEnergy = Long.MAX_VALUE
+        var start = max(0, len - rate * 3)
+        while (start + window <= len) {
+            var energy = 0L
+            for (i in start until start + window) energy += abs(audio[i].toInt())
+            if (energy < bestEnergy) {
+                bestEnergy = energy
+                best = start + window / 2
+            }
+            start += window
+        }
+        return best
+    }
+
+    /**
+     * Re-reads the phrase with the accurate model when there is one. Quiet audio is turned up, and a
+     * little silence goes on both ends: CTC models often drop a word that touches the edge of the clip.
+     */
     private fun reread(recognizer: OfflineRecognizer, audio: ShortArray, rate: Int): String {
-        if (audio.size < rate / 2) return "" // too short to be worth it
+        if (audio.size < rate / 5) return "" // too short to hold a word
+        var peak = 1
+        for (s in audio) peak = max(peak, abs(s.toInt()))
+        val gain = (0.9f / peak).coerceAtMost(MAX_GAIN / 32768f)
+        val pad = rate / 4
+        val samples = FloatArray(audio.size + 2 * pad)
+        for (i in audio.indices) samples[pad + i] = audio[i] * gain
         val stream = recognizer.createStream()
         return try {
-            stream.acceptWaveform(FloatArray(audio.size) { audio[it] / 32768f }, rate)
+            stream.acceptWaveform(samples, rate)
             recognizer.decode(stream)
             recognizer.getResult(stream).text.trim()
         } finally {
@@ -408,7 +446,11 @@ class CaptionService : Service() {
         private const val ACTION_TRANSLATE = "translate"
         private const val EXTRA_CODE = "code"
         private const val EXTRA_DATA = "data"
-        private const val MAX_PHRASE_SECONDS = 15
+        private const val MAX_PHRASE_SECONDS = 20
+        /** Silence, in seconds, that ends a phrase when the accurate model will re-read it. */
+        private const val END_SILENCE_SECONDS = 0.9f
+        /** Most that quiet audio is amplified before the accurate pass. */
+        private const val MAX_GAIN = 8f
 
         /** Starts captioning with the screen-capture consent the user just gave. */
         fun start(c: Context, resultCode: Int, data: Intent) = ContextCompat.startForegroundService(
