@@ -6,20 +6,34 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
-// sherpa-onnx (runs the accurate GigaAM model) isn't on Maven, so its release .aar is fetched
-// once into libs/ and checked against a known hash.
-val sherpaAar = file("libs/sherpa-onnx-1.13.8.aar")
-if (!sherpaAar.exists()) {
-    sherpaAar.parentFile.mkdirs()
-    uri("https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-1.13.8.aar").toURL()
-        .openStream().use { input -> sherpaAar.outputStream().use { input.copyTo(it) } }
+/** Downloads [url] into [to] once and checks it against a known hash. */
+fun fetchChecked(to: File, url: String, sha256: String): File {
+    if (!to.exists()) {
+        to.parentFile.mkdirs()
+        uri(url).toURL().openStream().use { input -> to.outputStream().use { input.copyTo(it) } }
+    }
+    val hash = MessageDigest.getInstance("SHA-256").digest(to.readBytes()).joinToString("") { "%02x".format(it) }
+    check(hash == sha256) {
+        to.delete()
+        "${to.name} hash mismatch"
+    }
+    return to
 }
-val sherpaHash = MessageDigest.getInstance("SHA-256").digest(sherpaAar.readBytes())
-    .joinToString("") { "%02x".format(it) }
-check(sherpaHash == "633c24321e06b1fe79feafa03ea16cbc0f8a286641e2da3559bac91bdb13bd96") {
-    sherpaAar.delete()
-    "sherpa-onnx .aar hash mismatch"
-}
+
+// sherpa-onnx (runs the accurate GigaAM model) isn't on Maven, so its release .aar is fetched into libs/.
+val sherpaAar = fetchChecked(
+    file("libs/sherpa-onnx-1.13.8.aar"),
+    "https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-1.13.8.aar",
+    "633c24321e06b1fe79feafa03ea16cbc0f8a286641e2da3559bac91bdb13bd96",
+)
+
+// Silero VAD (MIT, 640 KB) finds where phrases start and end in accurate mode. It ships as an asset.
+val vadAssets = file("libs/vad")
+fetchChecked(
+    File(vadAssets, "silero_vad.onnx"),
+    "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx",
+    "9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6",
+)
 
 // Release signing comes from CI secrets; without them the debug key is used.
 val signingStore = System.getenv("SIGNING_STORE_FILE")?.let { file(it) }?.takeIf { it.exists() }
@@ -66,6 +80,9 @@ android {
     }
     kotlinOptions {
         jvmTarget = "17"
+    }
+    sourceSets {
+        getByName("main").assets.srcDir(vadAssets)
     }
     buildFeatures {
         compose = true

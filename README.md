@@ -11,9 +11,11 @@ It's a no-ads clone of LiveCaptionN. Recognition and translation both run on the
   [Vosk](https://alphacephei.com/vosk/models). About 30 languages are available, including Polish, English, German,
   Spanish, French, Russian, Ukrainian and Chinese. After that it works offline
 - **Accurate mode** (Russian for now): download Sber's [GigaAM v3](https://github.com/salute-developers/GigaAM)
-  (225 MB, MIT). Live text still appears word by word. When a phrase ends, GigaAM re-reads its audio and replaces the line
+  (225 MB, MIT). Live text still appears word by word. A voice detector ([Silero VAD](https://github.com/snakers4/silero-vad),
+  built in) finds where each phrase starts and ends. When a phrase ends, GigaAM re-reads its audio and replaces the line
   with a much more accurate version that has punctuation and capitals, usually within a second or two. The line is light grey
-  until then. Translation runs on the improved text. Runs on the phone through [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)
+  until then. Words the quick model "hears" in music or noise are dropped. Translation runs on the improved text.
+  Runs on the phone through [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx)
 - **Translate to:** optional. Uses Google ML Kit on the phone, with about 30 MB per language downloaded on first use. The translation
   shows in white and the original in grey under it
 - Text size (S/M/L/XL) and background darkness (40–100%)

@@ -29,6 +29,8 @@ object Captions {
 
     fun replace(line: Line) = lines.update { all -> all.map { if (it.time == line.time) line else it } }
 
+    fun remove(time: Long) = lines.update { all -> all.filter { it.time != time } }
+
     fun clear() {
         partial.value = ""
         lines.value = emptyList()
